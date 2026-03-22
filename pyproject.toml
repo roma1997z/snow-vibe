@@ -1,0 +1,23 @@
+[project]
+name = "snow-vibe"
+version = "0.1.0"
+description = "Backend helpers for collecting ski resort weather forecasts."
+requires-python = ">=3.12"
+dependencies = [
+    "certifi>=2024.0.0",
+    "fastapi>=0.115.0",
+    "itsdangerous>=2.2.0",
+    "sqladmin>=0.21.0",
+    "sqlalchemy>=2.0.0",
+    "uvicorn>=0.30.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
