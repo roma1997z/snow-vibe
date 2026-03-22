@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 from snow_vibe.config import get_telegram_bot_token, get_telegram_webhook_secret
 from snow_vibe.http import build_ssl_context
 from snow_vibe.serialization import format_telegram_resort_forecast
-from snow_vibe.services import ForecastService
+from snow_vibe.services import ForecastService, format_best_resort_message
 from snow_vibe.storage import Database
 
 
@@ -18,11 +18,6 @@ WELCOME_TEXT = (
     "<b>snow vibe</b>\n"
     "Выбери действие в меню ниже.\n\n"
     "Сейчас можно посмотреть доступные курорты и получить прогноз на сегодня, завтра и послезавтра."
-)
-
-BEST_RESORT_PLACEHOLDER = (
-    "Подбор лучшего курорта я добавлю следующим шагом.\n"
-    "Пока можно открыть список курортов и посмотреть прогноз по каждому."
 )
 
 
@@ -114,11 +109,7 @@ class TelegramBot:
             return
 
         if text == BEST_RESORT_TEXT:
-            self.send_message(
-                chat_id,
-                BEST_RESORT_PLACEHOLDER,
-                reply_markup=self._main_menu_markup(),
-            )
+            self._send_best_resort(chat_id)
             return
 
         self.send_message(
@@ -174,6 +165,15 @@ class TelegramBot:
             chat_id,
             "Выбери курорт:",
             reply_markup={"inline_keyboard": keyboard},
+        )
+
+    def _send_best_resort(self, chat_id: int) -> None:
+        result = self.service.get_best_resort(force=False)
+        self.send_message(
+            chat_id,
+            format_best_resort_message(result),
+            parse_mode="HTML",
+            reply_markup=self._main_menu_markup(),
         )
 
     def _handle_callback_query(self, callback_query: dict) -> None:

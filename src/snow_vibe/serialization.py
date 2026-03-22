@@ -92,7 +92,7 @@ def format_telegram_resort_forecast(payload: dict) -> str:
         for day in spot["daily"][:3]:
             label = _format_short_date(day["day"])
             temp_range = _format_temperature_range(day["min_temp_c"], day["max_temp_c"])
-            precip = f"{_format_number(day['total_precip_mm'])} мм"
+            precip = _format_precipitation(day["min_temp_c"], day["max_temp_c"], day["total_precip_mm"])
             lines.append(
                 f"<code>{label}  {temp_range:<15} {precip:>7}</code>"
             )
@@ -124,3 +124,16 @@ def _format_number(value: float | None) -> str:
 def _format_short_date(value: str) -> str:
     parsed = datetime.fromisoformat(value)
     return parsed.strftime("%d.%m")
+
+
+def _format_precipitation(
+    min_temp: float | None,
+    max_temp: float | None,
+    precip_mm: float | None,
+) -> str:
+    amount = precip_mm or 0.0
+    if amount < 1:
+        return "-"
+    if max_temp is not None and max_temp > 0:
+        return "дождь"
+    return f"{_format_number(amount)} мм"
