@@ -15,6 +15,11 @@ service = ForecastService()
 admin = setup_admin(app)
 
 
+@app.get("/")
+def root() -> dict:
+    return {"service": "snow-vibe", "status": "ok"}
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}

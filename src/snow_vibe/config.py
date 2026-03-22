@@ -8,6 +8,7 @@ from pathlib import Path
 
 DEFAULT_USER_AGENT = "snow-vibe/0.1 (+https://github.com/rvzakharov/snow-vibe)"
 DEFAULT_DB_PATH = "data/snow_vibe.db"
+DEFAULT_VERCEL_DB_PATH = "/tmp/snow_vibe.db"
 DEFAULT_ADMIN_USERNAME = "admin"
 
 
@@ -32,7 +33,12 @@ def get_user_agent() -> str:
 
 def get_database_path() -> Path:
     load_dotenv()
-    return Path(os.environ.get("SNOW_VIBE_DB_PATH", DEFAULT_DB_PATH))
+    configured_path = os.environ.get("SNOW_VIBE_DB_PATH")
+    if configured_path:
+        return Path(configured_path)
+    if os.environ.get("VERCEL") == "1":
+        return Path(DEFAULT_VERCEL_DB_PATH)
+    return Path(DEFAULT_DB_PATH)
 
 
 def get_telegram_bot_token() -> str | None:
