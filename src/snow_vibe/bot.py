@@ -7,7 +7,7 @@ from urllib.request import Request, urlopen
 from snow_vibe.config import get_telegram_bot_token, get_telegram_webhook_secret
 from snow_vibe.http import build_ssl_context
 from snow_vibe.serialization import format_telegram_resort_forecast
-from snow_vibe.services import ForecastService, format_best_resort_message
+from snow_vibe.services import ForecastService
 from snow_vibe.storage import Database
 
 
@@ -169,9 +169,16 @@ class TelegramBot:
 
     def _send_best_resort(self, chat_id: int) -> None:
         result = self.service.get_best_resort(force=False)
+        payload = result["payload"]
+        reason = result["reasons"][0] if result["reasons"] else "лучшие условия по снегу и температуре"
+        text = (
+            f"<b>Лучший курорт сейчас</b>\n"
+            f"<i>{reason}</i>\n\n"
+            f"{format_telegram_resort_forecast(payload)}"
+        )
         self.send_message(
             chat_id,
-            format_best_resort_message(result),
+            text,
             parse_mode="HTML",
             reply_markup=self._main_menu_markup(),
         )

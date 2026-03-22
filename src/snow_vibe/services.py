@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime
-from html import escape
 from zoneinfo import ZoneInfo
 
 from snow_vibe.providers.metno import MetNoClient
@@ -77,10 +76,7 @@ class ForecastService:
             )
 
         scored.sort(key=lambda item: item["score"], reverse=True)
-        return {
-            "best": scored[0],
-            "ranking": scored,
-        }
+        return scored[0]
 
     def _fetch_spot_forecast(self, provider: str, resort, spot):
         if provider == "met.no":
@@ -120,28 +116,6 @@ class ForecastService:
         if score <= 0 and not reasons:
             reasons.append("В ближайшие дни нет явного снегопада при минусовой температуре.")
         return score, reasons
-
-
-def format_best_resort_message(result: dict) -> str:
-    best = result["best"]
-    payload = best["payload"]
-    resort_name = escape(payload["spots"][0]["resort"]["name"])
-
-    lines = [
-        f"<b>Лучший курорт сейчас: {resort_name}</b>",
-        f"<i>Score: {_format_number(best['score'])}</i>",
-        "",
-    ]
-    for reason in best["reasons"][:3]:
-        lines.append(f"• {escape(reason)}")
-
-    lines.append("")
-    lines.append("<b>Топ курортов</b>")
-    for item in result["ranking"]:
-        name = escape(item["payload"]["spots"][0]["resort"]["name"])
-        lines.append(f"• {name}: {_format_number(item['score'])}")
-
-    return "\n".join(lines)
 
 
 def _format_temperature(value: float | None) -> str:
