@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -35,9 +36,14 @@ def get_database_path() -> Path:
     load_dotenv()
     configured_path = os.environ.get("SNOW_VIBE_DB_PATH")
     if configured_path:
-        return Path(configured_path)
+        path = Path(configured_path)
+        if os.environ.get("VERCEL") == "1" and not path.is_absolute():
+            normalized = configured_path.lstrip("./")
+            if normalized == "tmp" or normalized.startswith("tmp/"):
+                return Path(tempfile.gettempdir()) / normalized.removeprefix("tmp/").removeprefix("tmp")
+        return path
     if os.environ.get("VERCEL") == "1":
-        return Path(DEFAULT_VERCEL_DB_PATH)
+        return Path(tempfile.gettempdir()) / "snow_vibe.db"
     return Path(DEFAULT_DB_PATH)
 
 
