@@ -1,18 +1,27 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from starlette.middleware.sessions import SessionMiddleware
 
 from snow_vibe.admin import setup_admin
 from snow_vibe.bot import TelegramBot
-from snow_vibe.config import get_admin_session_secret, get_telegram_webhook_secret
+from snow_vibe.config import (
+    get_admin_session_secret,
+    get_telegram_webhook_secret,
+)
 from snow_vibe.services import ForecastService
 
 
 app = FastAPI(title="snow-vibe", version="0.1.0")
 app.add_middleware(SessionMiddleware, secret_key=get_admin_session_secret())
-service = ForecastService()
-admin = setup_admin(app)
+setup_admin(app)
+
+
+@lru_cache(maxsize=1)
+def get_service() -> ForecastService:
+    return ForecastService()
 
 
 @app.get("/")
@@ -27,7 +36,7 @@ def health() -> dict:
 
 @app.get("/resorts")
 def list_resorts() -> list[dict]:
-    return service.list_resorts()
+    return get_service().list_resorts()
 
 
 @app.get("/resorts/{resort_slug}/forecast")
@@ -36,7 +45,7 @@ def get_forecast(
     force: bool = Query(default=False),
 ) -> dict:
     try:
-        return service.get_forecast(resort_slug, force=force)
+        return get_service().get_forecast(resort_slug, force=force)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -44,14 +53,14 @@ def get_forecast(
 @app.post("/resorts/{resort_slug}/refresh")
 def refresh_forecast(resort_slug: str) -> dict:
     try:
-        return service.get_forecast(resort_slug, force=True)
+        return get_service().get_forecast(resort_slug, force=True)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/refresh-all")
 def refresh_all() -> dict:
-    return {"items": service.refresh_all()}
+    return {"items": get_service().refresh_all()}
 
 
 @app.post("/telegram/webhook")

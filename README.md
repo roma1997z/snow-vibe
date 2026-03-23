@@ -2,6 +2,11 @@
 
 Python backend for collecting ski resort forecasts, caching them in SQLite, and serving data to a future Telegram bot.
 
+Additional project docs:
+
+- `docs/architecture.md`
+- `docs/database-options.md`
+
 ## Quick start
 
 Create a virtualenv and install dependencies:
@@ -69,11 +74,19 @@ python3 -m snow_vibe.cli set-webhook https://your-domain.example/telegram/webhoo
 python3 -m snow_vibe.cli webhook-info
 ```
 
+Use Turso for durable storage:
+
+```bash
+TURSO_DATABASE_URL=libsql://your-db-your-org.turso.io
+TURSO_AUTH_TOKEN=replace-me
+```
+
 ## Notes
 
 - Forecasts use the official `api.met.no` Locationforecast API.
 - Geocoding uses OpenStreetMap Nominatim.
 - Forecast responses are cached in SQLite for one local resort day by default.
+- If `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set, the app uses Turso instead of local SQLite.
 - A built-in SQLAdmin interface is available at `/admin` for browsing and editing SQLite data.
 - `/admin` is protected by username/password from `.env`.
 - Telegram can work via either long polling or `/telegram/webhook`.
