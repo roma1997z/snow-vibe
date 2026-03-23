@@ -20,6 +20,8 @@ def setup_admin(app: FastAPI) -> None:
         database = Database()
         forecast_count = len(database.list_forecasts())
         state_count = len(database.list_state())
+        user_count = len(database.list_telegram_users())
+        action_count = len(database.list_user_actions(limit=1000))
         return HTMLResponse(
             _page(
                 "snow-vibe admin",
@@ -27,9 +29,13 @@ def setup_admin(app: FastAPI) -> None:
                 <p><strong>Backend:</strong> {escape(database.backend)}</p>
                 <p><strong>Forecast rows:</strong> {forecast_count}</p>
                 <p><strong>App state rows:</strong> {state_count}</p>
+                <p><strong>Telegram users:</strong> {user_count}</p>
+                <p><strong>User actions:</strong> {action_count}</p>
                 <p>
                     <a href="/admin/forecasts">Forecast cache</a><br>
-                    <a href="/admin/app-state">App state</a>
+                    <a href="/admin/app-state">App state</a><br>
+                    <a href="/admin/users">Telegram users</a><br>
+                    <a href="/admin/actions">User actions</a>
                 </p>
                 <form method="post" action="/admin/logout">
                     <button type="submit">Log out</button>
@@ -187,6 +193,112 @@ def setup_admin(app: FastAPI) -> None:
             )
         )
 
+    @app.get("/admin/users", response_class=HTMLResponse)
+    async def admin_users(request: Request) -> HTMLResponse:
+        auth = _require_auth(request)
+        if auth is not None:
+            return auth
+        database = Database()
+        rows = database.list_telegram_users()
+        rows_html = "".join(
+            f"""
+            <tr>
+                <td><a href="/admin/users/{escape(row['telegram_user_id'])}">{escape(row['telegram_user_id'])}</a></td>
+                <td>{escape(_display_user_name(row))}</td>
+                <td>{escape(row['current_state'])}</td>
+                <td>{row['action_count']}</td>
+                <td>{row['best_resort_count']}</td>
+                <td>{escape(row['last_action'] or '-')}</td>
+                <td>{escape(row['last_seen_at'])}</td>
+            </tr>
+            """
+            for row in rows
+        )
+        return HTMLResponse(
+            _page(
+                "Telegram Users",
+                f"""
+                <p><a href="/admin">Back</a></p>
+                <table>
+                    <thead><tr><th>User ID</th><th>User</th><th>Current State</th><th>Actions</th><th>Best Clicks</th><th>Last Action</th><th>Last Seen</th></tr></thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+                """,
+            )
+        )
+
+    @app.get("/admin/users/{telegram_user_id}", response_class=HTMLResponse)
+    async def admin_user_detail(request: Request, telegram_user_id: str) -> HTMLResponse:
+        auth = _require_auth(request)
+        if auth is not None:
+            return auth
+        database = Database()
+        user = database.get_telegram_user(telegram_user_id)
+        if user is None:
+            return HTMLResponse(_page("Not Found", "<p>User not found.</p>"), status_code=404)
+        actions = database.list_user_actions(telegram_user_id=telegram_user_id, limit=100)
+        actions_html = "".join(
+            f"""
+            <tr>
+                <td>{escape(action['created_at'])}</td>
+                <td>{escape(action['action_type'])}</td>
+                <td>{escape(action['action_value'] or '-')}</td>
+            </tr>
+            """
+            for action in actions
+        )
+        return HTMLResponse(
+            _page(
+                f"User: {escape(telegram_user_id)}",
+                f"""
+                <p><a href="/admin/users">Back</a></p>
+                <p><strong>User:</strong> {escape(_display_user_name(user))}</p>
+                <p><strong>Chat ID:</strong> {escape(user['chat_id'])}</p>
+                <p><strong>Current state:</strong> {escape(user['current_state'])}</p>
+                <p><strong>Last action:</strong> {escape(user['last_action'] or '-')}</p>
+                <p><strong>Last seen:</strong> {escape(user['last_seen_at'])}</p>
+                <p><strong>State payload:</strong></p>
+                <pre>{escape(user['state_payload_json'])}</pre>
+                <h2>Recent actions</h2>
+                <table>
+                    <thead><tr><th>Created</th><th>Action</th><th>Value</th></tr></thead>
+                    <tbody>{actions_html}</tbody>
+                </table>
+                """,
+            )
+        )
+
+    @app.get("/admin/actions", response_class=HTMLResponse)
+    async def admin_actions(request: Request) -> HTMLResponse:
+        auth = _require_auth(request)
+        if auth is not None:
+            return auth
+        database = Database()
+        rows = database.list_user_actions(limit=300)
+        rows_html = "".join(
+            f"""
+            <tr>
+                <td>{escape(action['created_at'])}</td>
+                <td><a href="/admin/users/{escape(action['telegram_user_id'])}">{escape(action['telegram_user_id'])}</a></td>
+                <td>{escape(action['action_type'])}</td>
+                <td>{escape(action['action_value'] or '-')}</td>
+            </tr>
+            """
+            for action in rows
+        )
+        return HTMLResponse(
+            _page(
+                "User Actions",
+                f"""
+                <p><a href="/admin">Back</a></p>
+                <table>
+                    <thead><tr><th>Created</th><th>User ID</th><th>Action</th><th>Value</th></tr></thead>
+                    <tbody>{rows_html}</tbody>
+                </table>
+                """,
+            )
+        )
+
     @app.get("/admin/forecasts/{resort_slug}/{cache_date}", response_class=HTMLResponse)
     async def admin_forecast_edit(
         request: Request,
@@ -271,6 +383,13 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[:limit] + "..."
+
+
+def _display_user_name(user: dict) -> str:
+    if user.get("username"):
+        return f"@{user['username']}"
+    name = " ".join(part for part in [user.get("first_name"), user.get("last_name")] if part)
+    return name or user.get("telegram_user_id", "unknown")
 
 
 def _page(title: str, body: str) -> str:

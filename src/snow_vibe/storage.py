@@ -29,6 +29,28 @@ CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS telegram_users (
+    telegram_user_id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    username TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    current_state TEXT NOT NULL,
+    state_payload_json TEXT NOT NULL,
+    last_action TEXT,
+    last_seen_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_user_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    action_type TEXT NOT NULL,
+    action_value TEXT,
+    created_at TEXT NOT NULL
+);
 """
 
 
@@ -204,6 +226,201 @@ class Database:
                 """,
                 (key, value),
             )
+
+    def upsert_telegram_user(
+        self,
+        *,
+        telegram_user_id: str,
+        chat_id: str,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        current_state: str,
+        state_payload: dict | None,
+        last_action: str | None,
+        last_seen_at: str,
+    ) -> None:
+        payload_json = json.dumps(state_payload or {}, ensure_ascii=False)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO telegram_users (
+                    telegram_user_id,
+                    chat_id,
+                    username,
+                    first_name,
+                    last_name,
+                    current_state,
+                    state_payload_json,
+                    last_action,
+                    last_seen_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_user_id)
+                DO UPDATE SET
+                    chat_id = excluded.chat_id,
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    last_name = excluded.last_name,
+                    current_state = excluded.current_state,
+                    state_payload_json = excluded.state_payload_json,
+                    last_action = excluded.last_action,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    telegram_user_id,
+                    chat_id,
+                    username,
+                    first_name,
+                    last_name,
+                    current_state,
+                    payload_json,
+                    last_action,
+                    last_seen_at,
+                    last_seen_at,
+                ),
+            )
+
+    def log_user_action(
+        self,
+        *,
+        telegram_user_id: str,
+        chat_id: str,
+        action_type: str,
+        action_value: str | None,
+        created_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_actions (
+                    telegram_user_id,
+                    chat_id,
+                    action_type,
+                    action_value,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (telegram_user_id, chat_id, action_type, action_value, created_at),
+            )
+
+    def list_telegram_users(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    u.telegram_user_id,
+                    u.chat_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    u.current_state,
+                    u.state_payload_json,
+                    u.last_action,
+                    u.last_seen_at,
+                    u.created_at,
+                    COUNT(a.id) AS action_count,
+                    SUM(CASE WHEN a.action_type = 'choose_best_resort' THEN 1 ELSE 0 END) AS best_resort_count
+                FROM telegram_users u
+                LEFT JOIN user_actions a ON a.telegram_user_id = u.telegram_user_id
+                GROUP BY
+                    u.telegram_user_id,
+                    u.chat_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    u.current_state,
+                    u.state_payload_json,
+                    u.last_action,
+                    u.last_seen_at,
+                    u.created_at
+                ORDER BY u.last_seen_at DESC
+                """
+            ).fetchall()
+        return [
+            {
+                "telegram_user_id": _value_from_row(row, "telegram_user_id", 0),
+                "chat_id": _value_from_row(row, "chat_id", 1),
+                "username": _value_from_row(row, "username", 2),
+                "first_name": _value_from_row(row, "first_name", 3),
+                "last_name": _value_from_row(row, "last_name", 4),
+                "current_state": _value_from_row(row, "current_state", 5),
+                "state_payload_json": _value_from_row(row, "state_payload_json", 6),
+                "last_action": _value_from_row(row, "last_action", 7),
+                "last_seen_at": _value_from_row(row, "last_seen_at", 8),
+                "created_at": _value_from_row(row, "created_at", 9),
+                "action_count": _value_from_row(row, "action_count", 10) or 0,
+                "best_resort_count": _value_from_row(row, "best_resort_count", 11) or 0,
+            }
+            for row in rows
+        ]
+
+    def get_telegram_user(self, telegram_user_id: str) -> dict | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT
+                    telegram_user_id,
+                    chat_id,
+                    username,
+                    first_name,
+                    last_name,
+                    current_state,
+                    state_payload_json,
+                    last_action,
+                    last_seen_at,
+                    created_at
+                FROM telegram_users
+                WHERE telegram_user_id = ?
+                """,
+                (telegram_user_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "telegram_user_id": _value_from_row(row, "telegram_user_id", 0),
+            "chat_id": _value_from_row(row, "chat_id", 1),
+            "username": _value_from_row(row, "username", 2),
+            "first_name": _value_from_row(row, "first_name", 3),
+            "last_name": _value_from_row(row, "last_name", 4),
+            "current_state": _value_from_row(row, "current_state", 5),
+            "state_payload_json": _value_from_row(row, "state_payload_json", 6),
+            "last_action": _value_from_row(row, "last_action", 7),
+            "last_seen_at": _value_from_row(row, "last_seen_at", 8),
+            "created_at": _value_from_row(row, "created_at", 9),
+        }
+
+    def list_user_actions(
+        self,
+        *,
+        telegram_user_id: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        query = """
+            SELECT id, telegram_user_id, chat_id, action_type, action_value, created_at
+            FROM user_actions
+        """
+        params: tuple[Any, ...]
+        if telegram_user_id is not None:
+            query += " WHERE telegram_user_id = ?"
+            params = (telegram_user_id, limit)
+        else:
+            params = (limit,)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+
+        with self.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [
+            {
+                "id": _value_from_row(row, "id", 0),
+                "telegram_user_id": _value_from_row(row, "telegram_user_id", 1),
+                "chat_id": _value_from_row(row, "chat_id", 2),
+                "action_type": _value_from_row(row, "action_type", 3),
+                "action_value": _value_from_row(row, "action_value", 4),
+                "created_at": _value_from_row(row, "created_at", 5),
+            }
+            for row in rows
+        ]
 
 
 def _value_from_row(row: Any, key: str, index: int) -> Any:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -82,8 +83,17 @@ class TelegramBot:
 
         chat_id = message["chat"]["id"]
         text = message["text"].strip()
+        from_user = message.get("from", {})
 
         if text == "/start" or text == "/help":
+            self._track_user_state(
+                from_user=from_user,
+                chat_id=chat_id,
+                current_state="main_menu",
+                state_payload={"entrypoint": text},
+                action_type="open_start",
+                action_value=text,
+            )
             self.send_message(
                 chat_id,
                 WELCOME_TEXT,
@@ -93,25 +103,41 @@ class TelegramBot:
             return
 
         if text == "/resorts" or text == SHOW_RESORTS_TEXT:
+            self._track_user_state(
+                from_user=from_user,
+                chat_id=chat_id,
+                current_state="browsing_resorts",
+                state_payload={},
+                action_type="open_resorts",
+                action_value=None,
+            )
             self._send_resort_picker(chat_id)
             return
 
         if text.startswith("/weather"):
             _, _, slug = text.partition(" ")
             slug = slug.strip() or "bigwood"
-            self._send_forecast(chat_id, slug, force=False)
+            self._send_forecast(chat_id, slug, force=False, from_user=from_user, source="command")
             return
 
         if text.startswith("/refresh"):
             _, _, slug = text.partition(" ")
             slug = slug.strip() or "bigwood"
-            self._send_forecast(chat_id, slug, force=True)
+            self._send_forecast(chat_id, slug, force=True, from_user=from_user, source="refresh")
             return
 
         if text == BEST_RESORT_TEXT:
-            self._send_best_resort(chat_id)
+            self._send_best_resort(chat_id, from_user=from_user)
             return
 
+        self._track_user_state(
+            from_user=from_user,
+            chat_id=chat_id,
+            current_state="main_menu",
+            state_payload={"entrypoint": "fallback"},
+            action_type="open_main_menu",
+            action_value=text,
+        )
         self.send_message(
             chat_id,
             WELCOME_TEXT,
@@ -138,7 +164,15 @@ class TelegramBot:
             {"drop_pending_updates": str(drop_pending_updates).lower()},
         )
 
-    def _send_forecast(self, chat_id: int, slug: str, *, force: bool) -> None:
+    def _send_forecast(
+        self,
+        chat_id: int,
+        slug: str,
+        *,
+        force: bool,
+        from_user: dict | None = None,
+        source: str = "manual",
+    ) -> None:
         try:
             payload = self.service.get_forecast(slug, force=force)
         except KeyError:
@@ -148,6 +182,16 @@ class TelegramBot:
                 reply_markup=self._main_menu_markup(),
             )
             return
+        if from_user is not None:
+            action_type = "refresh_resort" if force else "view_resort"
+            self._track_user_state(
+                from_user=from_user,
+                chat_id=chat_id,
+                current_state="viewing_resort",
+                state_payload={"resort_slug": slug, "source": source},
+                action_type=action_type,
+                action_value=slug,
+            )
         self.send_message(
             chat_id,
             format_telegram_resort_forecast(payload),
@@ -167,10 +211,20 @@ class TelegramBot:
             reply_markup={"inline_keyboard": keyboard},
         )
 
-    def _send_best_resort(self, chat_id: int) -> None:
+    def _send_best_resort(self, chat_id: int, *, from_user: dict | None = None) -> None:
         result = self.service.get_best_resort(force=False)
         payload = result["payload"]
         reason = result["reasons"][0] if result["reasons"] else "лучшие условия по снегу и температуре"
+        best_slug = result["slug"]
+        if from_user is not None:
+            self._track_user_state(
+                from_user=from_user,
+                chat_id=chat_id,
+                current_state="viewing_best_resort",
+                state_payload={"resort_slug": best_slug, "reason": reason},
+                action_type="choose_best_resort",
+                action_value=best_slug,
+            )
         text = (
             f"<b>Лучший курорт сейчас</b>\n"
             f"<i>{reason}</i>\n\n"
@@ -189,11 +243,12 @@ class TelegramBot:
         message = callback_query.get("message", {})
         chat = message.get("chat", {})
         chat_id = chat.get("id")
+        from_user = callback_query.get("from", {})
 
         if data.startswith("resort:") and chat_id is not None:
             slug = data.split(":", 1)[1]
             self._answer_callback_query(callback_id)
-            self._send_forecast(chat_id, slug, force=False)
+            self._send_forecast(chat_id, slug, force=False, from_user=from_user, source="button")
             return
 
         self._answer_callback_query(callback_id, text="Пока это действие не поддерживается.")
@@ -223,3 +278,37 @@ class TelegramBot:
         if not payload.get("ok"):
             raise RuntimeError(f"Telegram API error: {payload}")
         return payload
+
+    def _track_user_state(
+        self,
+        *,
+        from_user: dict,
+        chat_id: int,
+        current_state: str,
+        state_payload: dict,
+        action_type: str,
+        action_value: str | None,
+    ) -> None:
+        if not from_user or "id" not in from_user:
+            return
+
+        timestamp = datetime.now(UTC).isoformat()
+        telegram_user_id = str(from_user["id"])
+        self.database.upsert_telegram_user(
+            telegram_user_id=telegram_user_id,
+            chat_id=str(chat_id),
+            username=from_user.get("username"),
+            first_name=from_user.get("first_name"),
+            last_name=from_user.get("last_name"),
+            current_state=current_state,
+            state_payload=state_payload,
+            last_action=action_type,
+            last_seen_at=timestamp,
+        )
+        self.database.log_user_action(
+            telegram_user_id=telegram_user_id,
+            chat_id=str(chat_id),
+            action_type=action_type,
+            action_value=action_value,
+            created_at=timestamp,
+        )
