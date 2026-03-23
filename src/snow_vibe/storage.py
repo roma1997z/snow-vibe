@@ -319,6 +319,73 @@ class Database:
                 (telegram_user_id, chat_id, action_type, action_value, created_at),
             )
 
+    def record_user_state(
+        self,
+        *,
+        telegram_user_id: str,
+        chat_id: str,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        current_state: str,
+        state_payload: dict | None,
+        action_type: str,
+        action_value: str | None,
+        created_at: str,
+    ) -> None:
+        payload_json = json.dumps(state_payload or {}, ensure_ascii=False)
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO telegram_users (
+                    telegram_user_id,
+                    chat_id,
+                    username,
+                    first_name,
+                    last_name,
+                    current_state,
+                    state_payload_json,
+                    last_action,
+                    last_seen_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_user_id)
+                DO UPDATE SET
+                    chat_id = excluded.chat_id,
+                    username = excluded.username,
+                    first_name = excluded.first_name,
+                    last_name = excluded.last_name,
+                    current_state = excluded.current_state,
+                    state_payload_json = excluded.state_payload_json,
+                    last_action = excluded.last_action,
+                    last_seen_at = excluded.last_seen_at
+                """,
+                (
+                    telegram_user_id,
+                    chat_id,
+                    username,
+                    first_name,
+                    last_name,
+                    current_state,
+                    payload_json,
+                    action_type,
+                    created_at,
+                    created_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO user_actions (
+                    telegram_user_id,
+                    chat_id,
+                    action_type,
+                    action_value,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (telegram_user_id, chat_id, action_type, action_value, created_at),
+            )
+
     def list_telegram_users(self) -> list[dict]:
         with self.connect() as connection:
             rows = connection.execute(
@@ -405,6 +472,83 @@ class Database:
             "created_at": _value_from_row(row, "created_at", 9),
         }
 
+    def get_user_context(self, telegram_user_id: str) -> dict:
+        with self.connect() as connection:
+            user_row = connection.execute(
+                """
+                SELECT
+                    telegram_user_id,
+                    chat_id,
+                    username,
+                    first_name,
+                    last_name,
+                    current_state,
+                    state_payload_json,
+                    last_action,
+                    last_seen_at,
+                    created_at
+                FROM telegram_users
+                WHERE telegram_user_id = ?
+                """,
+                (telegram_user_id,),
+            ).fetchone()
+            favorite_rows = connection.execute(
+                """
+                SELECT resort_slug
+                FROM user_favorite_resorts
+                WHERE telegram_user_id = ?
+                ORDER BY created_at ASC, resort_slug ASC
+                """,
+                (telegram_user_id,),
+            ).fetchall()
+            preference_row = connection.execute(
+                """
+                SELECT telegram_user_id, start_date, end_date, notifications_enabled, updated_at
+                FROM user_trip_preferences
+                WHERE telegram_user_id = ?
+                """,
+                (telegram_user_id,),
+            ).fetchone()
+
+        user = None
+        if user_row is not None:
+            user = {
+                "telegram_user_id": _value_from_row(user_row, "telegram_user_id", 0),
+                "chat_id": _value_from_row(user_row, "chat_id", 1),
+                "username": _value_from_row(user_row, "username", 2),
+                "first_name": _value_from_row(user_row, "first_name", 3),
+                "last_name": _value_from_row(user_row, "last_name", 4),
+                "current_state": _value_from_row(user_row, "current_state", 5),
+                "state_payload_json": _value_from_row(user_row, "state_payload_json", 6),
+                "last_action": _value_from_row(user_row, "last_action", 7),
+                "last_seen_at": _value_from_row(user_row, "last_seen_at", 8),
+                "created_at": _value_from_row(user_row, "created_at", 9),
+            }
+
+        favorites = [_value_from_row(row, "resort_slug", 0) for row in favorite_rows]
+        if preference_row is None:
+            trip_preferences = {
+                "telegram_user_id": telegram_user_id,
+                "start_date": None,
+                "end_date": None,
+                "notifications_enabled": False,
+                "updated_at": None,
+            }
+        else:
+            trip_preferences = {
+                "telegram_user_id": _value_from_row(preference_row, "telegram_user_id", 0),
+                "start_date": _value_from_row(preference_row, "start_date", 1),
+                "end_date": _value_from_row(preference_row, "end_date", 2),
+                "notifications_enabled": bool(_value_from_row(preference_row, "notifications_enabled", 3)),
+                "updated_at": _value_from_row(preference_row, "updated_at", 4),
+            }
+
+        return {
+            "user": user,
+            "favorites": favorites,
+            "trip_preferences": trip_preferences,
+        }
+
     def list_user_actions(
         self,
         *,
@@ -450,7 +594,13 @@ class Database:
             ).fetchall()
         return [_value_from_row(row, "resort_slug", 0) for row in rows]
 
-    def user_has_favorite_resort(self, telegram_user_id: str, resort_slug: str) -> bool:
+    def toggle_user_favorite_resort(
+        self,
+        *,
+        telegram_user_id: str,
+        resort_slug: str,
+        created_at: str,
+    ) -> tuple[bool, list[str]]:
         with self.connect() as connection:
             row = connection.execute(
                 """
@@ -460,38 +610,40 @@ class Database:
                 """,
                 (telegram_user_id, resort_slug),
             ).fetchone()
-        return row is not None
-
-    def add_user_favorite_resort(
-        self,
-        *,
-        telegram_user_id: str,
-        resort_slug: str,
-        created_at: str,
-    ) -> None:
-        with self.connect() as connection:
-            connection.execute(
+            if row is not None:
+                connection.execute(
+                    """
+                    DELETE FROM user_favorite_resorts
+                    WHERE telegram_user_id = ? AND resort_slug = ?
+                    """,
+                    (telegram_user_id, resort_slug),
+                )
+                added = False
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO user_favorite_resorts (
+                        telegram_user_id,
+                        resort_slug,
+                        created_at
+                    ) VALUES (?, ?, ?)
+                    ON CONFLICT(telegram_user_id, resort_slug)
+                    DO NOTHING
+                    """,
+                    (telegram_user_id, resort_slug, created_at),
+                )
+                added = True
+            rows = connection.execute(
                 """
-                INSERT INTO user_favorite_resorts (
-                    telegram_user_id,
-                    resort_slug,
-                    created_at
-                ) VALUES (?, ?, ?)
-                ON CONFLICT(telegram_user_id, resort_slug)
-                DO NOTHING
+                SELECT resort_slug
+                FROM user_favorite_resorts
+                WHERE telegram_user_id = ?
+                ORDER BY created_at ASC, resort_slug ASC
                 """,
-                (telegram_user_id, resort_slug, created_at),
-            )
-
-    def remove_user_favorite_resort(self, *, telegram_user_id: str, resort_slug: str) -> None:
-        with self.connect() as connection:
-            connection.execute(
-                """
-                DELETE FROM user_favorite_resorts
-                WHERE telegram_user_id = ? AND resort_slug = ?
-                """,
-                (telegram_user_id, resort_slug),
-            )
+                (telegram_user_id,),
+            ).fetchall()
+        favorites = [_value_from_row(row, "resort_slug", 0) for row in rows]
+        return added, favorites
 
     def get_user_trip_preferences(self, telegram_user_id: str) -> dict:
         with self.connect() as connection:
@@ -561,24 +713,79 @@ class Database:
         notifications_enabled: bool,
         updated_at: str,
     ) -> None:
-        current = self.get_user_trip_preferences(telegram_user_id)
-        self.save_user_trip_preferences(
-            telegram_user_id=telegram_user_id,
-            start_date=current["start_date"],
-            end_date=current["end_date"],
-            notifications_enabled=notifications_enabled,
-            updated_at=updated_at,
-        )
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT start_date, end_date
+                FROM user_trip_preferences
+                WHERE telegram_user_id = ?
+                """,
+                (telegram_user_id,),
+            ).fetchone()
+            start_date = None if row is None else _value_from_row(row, "start_date", 0)
+            end_date = None if row is None else _value_from_row(row, "end_date", 1)
+            connection.execute(
+                """
+                INSERT INTO user_trip_preferences (
+                    telegram_user_id,
+                    start_date,
+                    end_date,
+                    notifications_enabled,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_user_id)
+                DO UPDATE SET
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    notifications_enabled = excluded.notifications_enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    telegram_user_id,
+                    start_date,
+                    end_date,
+                    int(notifications_enabled),
+                    updated_at,
+                ),
+            )
 
     def clear_user_trip_dates(self, *, telegram_user_id: str, updated_at: str) -> None:
-        current = self.get_user_trip_preferences(telegram_user_id)
-        self.save_user_trip_preferences(
-            telegram_user_id=telegram_user_id,
-            start_date=None,
-            end_date=None,
-            notifications_enabled=current["notifications_enabled"],
-            updated_at=updated_at,
-        )
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT notifications_enabled
+                FROM user_trip_preferences
+                WHERE telegram_user_id = ?
+                """,
+                (telegram_user_id,),
+            ).fetchone()
+            notifications_enabled = (
+                False if row is None else bool(_value_from_row(row, "notifications_enabled", 0))
+            )
+            connection.execute(
+                """
+                INSERT INTO user_trip_preferences (
+                    telegram_user_id,
+                    start_date,
+                    end_date,
+                    notifications_enabled,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_user_id)
+                DO UPDATE SET
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    notifications_enabled = excluded.notifications_enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    telegram_user_id,
+                    None,
+                    None,
+                    int(notifications_enabled),
+                    updated_at,
+                ),
+            )
 
     def list_users_with_notifications_enabled(self) -> list[dict]:
         with self.connect() as connection:

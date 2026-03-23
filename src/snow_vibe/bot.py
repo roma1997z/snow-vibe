@@ -39,6 +39,8 @@ class TelegramBot:
         self.service = service or ForecastService()
         self.database = database or Database()
         self.base_url = f"https://api.telegram.org/bot{self.token}"
+        self.resorts = self.service.list_resorts()
+        self.resort_names = {resort["slug"]: resort["name"] for resort in self.resorts}
 
     def run_polling(self) -> None:
         while True:
@@ -86,7 +88,8 @@ class TelegramBot:
         chat_id = message["chat"]["id"]
         text = message["text"].strip()
         from_user = message.get("from", {})
-        current_user = self._get_current_user(from_user)
+        user_context = self._get_user_context(from_user)
+        current_user = user_context["user"]
         reserved_texts = {
             "/start",
             "/help",
@@ -161,11 +164,11 @@ class TelegramBot:
                 action_type="open_favorites",
                 action_value=None,
             )
-            self._send_favorites_picker(chat_id, from_user=from_user)
+            self._send_favorites_picker(chat_id, user_context=user_context)
             return
 
         if text == TRIP_PLAN_TEXT:
-            self._send_trip_settings(chat_id, from_user=from_user)
+            self._send_trip_settings(chat_id, from_user=from_user, user_context=user_context)
             return
 
         self._track_user_state(
@@ -238,10 +241,9 @@ class TelegramBot:
         )
 
     def _send_resort_picker(self, chat_id: int) -> None:
-        resorts = self.service.list_resorts()
         keyboard = [
             [{"text": resort["name"], "callback_data": f'resort:{resort["slug"]}'}]
-            for resort in resorts
+            for resort in self.resorts
         ]
         self.send_message(
             chat_id,
@@ -250,8 +252,9 @@ class TelegramBot:
         )
 
     def _send_best_resort(self, chat_id: int, *, from_user: dict | None = None) -> None:
-        favorite_slugs = self._get_favorite_resorts(from_user)
-        trip_preferences = self._get_trip_preferences(from_user)
+        user_context = self._get_user_context(from_user)
+        favorite_slugs = user_context["favorites"]
+        trip_preferences = user_context["trip_preferences"]
         start_date = self._parse_iso_date(trip_preferences.get("start_date"))
         end_date = self._parse_iso_date(trip_preferences.get("end_date"))
         result = self.service.get_best_resort(
@@ -303,7 +306,8 @@ class TelegramBot:
         for user in self.database.list_users_with_notifications_enabled():
             start_date = self._parse_iso_date(user.get("start_date"))
             end_date = self._parse_iso_date(user.get("end_date"))
-            favorite_slugs = self.database.list_user_favorite_resorts(user["telegram_user_id"])
+            user_context = self.database.get_user_context(user["telegram_user_id"])
+            favorite_slugs = user_context["favorites"]
             if start_date is None or end_date is None or not favorite_slugs:
                 continue
 
@@ -367,7 +371,7 @@ class TelegramBot:
 
         if data.startswith("favorite:") and chat_id is not None and message_id is not None:
             slug = data.split(":", 1)[1]
-            added = self._toggle_favorite_resort(from_user=from_user, chat_id=chat_id, slug=slug)
+            added, favorites = self._toggle_favorite_resort(from_user=from_user, chat_id=chat_id, slug=slug)
             self._answer_callback_query(
                 callback_id,
                 text="Курорт добавлен в избранное" if added else "Курорт убран из избранного",
@@ -375,9 +379,9 @@ class TelegramBot:
             self._edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=self._favorites_picker_text(from_user),
+                text=self._favorites_picker_text(favorites),
                 parse_mode="HTML",
-                reply_markup=self._favorites_picker_markup(from_user),
+                reply_markup=self._favorites_picker_markup(favorites),
             )
             return
 
@@ -388,6 +392,7 @@ class TelegramBot:
 
         if data == "trip:toggle_notifications" and chat_id is not None and message_id is not None:
             enabled = self._toggle_notifications(from_user=from_user, chat_id=chat_id)
+            user_context = self._get_user_context(from_user)
             self._answer_callback_query(
                 callback_id,
                 text="Уведомления включены" if enabled else "Уведомления выключены",
@@ -395,9 +400,9 @@ class TelegramBot:
             self._edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=self._trip_settings_text(from_user),
+                text=self._trip_settings_text(user_context["favorites"], user_context["trip_preferences"]),
                 parse_mode="HTML",
-                reply_markup=self._trip_settings_markup(from_user),
+                reply_markup=self._trip_settings_markup(user_context["trip_preferences"]),
             )
             return
 
@@ -425,13 +430,14 @@ class TelegramBot:
 
         if data == "trip:clear_dates" and chat_id is not None and message_id is not None:
             self._clear_trip_dates(from_user=from_user, chat_id=chat_id)
+            user_context = self._get_user_context(from_user)
             self._answer_callback_query(callback_id, text="Даты поездки очищены")
             self._edit_message_text(
                 chat_id=chat_id,
                 message_id=message_id,
-                text=self._trip_settings_text(from_user),
+                text=self._trip_settings_text(user_context["favorites"], user_context["trip_preferences"]),
                 parse_mode="HTML",
-                reply_markup=self._trip_settings_markup(from_user),
+                reply_markup=self._trip_settings_markup(user_context["trip_preferences"]),
             )
             return
 
@@ -472,16 +478,23 @@ class TelegramBot:
             "resize_keyboard": True,
         }
 
-    def _send_favorites_picker(self, chat_id: int, *, from_user: dict | None = None) -> None:
+    def _send_favorites_picker(
+        self,
+        chat_id: int,
+        *,
+        from_user: dict | None = None,
+        user_context: dict | None = None,
+    ) -> None:
+        if user_context is None:
+            user_context = self._get_user_context(from_user)
         self.send_message(
             chat_id,
-            self._favorites_picker_text(from_user),
+            self._favorites_picker_text(user_context["favorites"]),
             parse_mode="HTML",
-            reply_markup=self._favorites_picker_markup(from_user),
+            reply_markup=self._favorites_picker_markup(user_context["favorites"]),
         )
 
-    def _favorites_picker_text(self, from_user: dict | None) -> str:
-        favorites = self._get_favorite_resorts(from_user)
+    def _favorites_picker_text(self, favorites: list[str]) -> str:
         favorites_text = ", ".join(self._resort_name(slug) for slug in favorites) if favorites else "пока нет"
         return (
             "<b>Избранные курорты</b>\n"
@@ -489,11 +502,11 @@ class TelegramBot:
             f"<i>Сейчас в избранном: {favorites_text}</i>"
         )
 
-    def _favorites_picker_markup(self, from_user: dict | None) -> dict:
-        favorites = set(self._get_favorite_resorts(from_user))
+    def _favorites_picker_markup(self, favorites: list[str]) -> dict:
+        favorite_set = set(favorites)
         keyboard = []
-        for resort in self.service.list_resorts():
-            prefix = "✅" if resort["slug"] in favorites else "◻️"
+        for resort in self.resorts:
+            prefix = "✅" if resort["slug"] in favorite_set else "◻️"
             keyboard.append(
                 [
                     {
@@ -505,8 +518,16 @@ class TelegramBot:
         keyboard.append([{"text": "Готово", "callback_data": "favorites:done"}])
         return {"inline_keyboard": keyboard}
 
-    def _send_trip_settings(self, chat_id: int, *, from_user: dict | None = None) -> None:
-        favorites = self._get_favorite_resorts(from_user)
+    def _send_trip_settings(
+        self,
+        chat_id: int,
+        *,
+        from_user: dict | None = None,
+        user_context: dict | None = None,
+    ) -> None:
+        if user_context is None:
+            user_context = self._get_user_context(from_user)
+        favorites = user_context["favorites"]
         if not favorites:
             self.send_message(
                 chat_id,
@@ -524,14 +545,12 @@ class TelegramBot:
         )
         self.send_message(
             chat_id,
-            self._trip_settings_text(from_user),
+            self._trip_settings_text(favorites, user_context["trip_preferences"]),
             parse_mode="HTML",
-            reply_markup=self._trip_settings_markup(from_user),
+            reply_markup=self._trip_settings_markup(user_context["trip_preferences"]),
         )
 
-    def _trip_settings_text(self, from_user: dict | None) -> str:
-        favorites = self._get_favorite_resorts(from_user)
-        preferences = self._get_trip_preferences(from_user)
+    def _trip_settings_text(self, favorites: list[str], preferences: dict) -> str:
         favorite_names = ", ".join(self._resort_name(slug) for slug in favorites) or "пока нет"
         date_range = self._format_trip_date_range(
             preferences.get("start_date"),
@@ -546,8 +565,7 @@ class TelegramBot:
             "Сохрани даты поездки, и я буду подбирать лучший курорт уже в этом окне."
         )
 
-    def _trip_settings_markup(self, from_user: dict | None) -> dict:
-        preferences = self._get_trip_preferences(from_user)
+    def _trip_settings_markup(self, preferences: dict) -> dict:
         notifications_label = "Уведомления: вкл" if preferences.get("notifications_enabled") else "Уведомления: выкл"
         return {
             "inline_keyboard": [
@@ -597,24 +615,22 @@ class TelegramBot:
         )
         self.send_message(
             chat_id,
-            self._trip_settings_text(from_user),
+            self._trip_settings_text(
+                self._get_favorite_resorts(from_user),
+                self._get_trip_preferences(from_user),
+            ),
             parse_mode="HTML",
-            reply_markup=self._trip_settings_markup(from_user),
+            reply_markup=self._trip_settings_markup(self._get_trip_preferences(from_user)),
         )
         return True
 
-    def _toggle_favorite_resort(self, *, from_user: dict, chat_id: int, slug: str) -> bool:
+    def _toggle_favorite_resort(self, *, from_user: dict, chat_id: int, slug: str) -> tuple[bool, list[str]]:
         telegram_user_id = self._telegram_user_id(from_user)
-        if self.database.user_has_favorite_resort(telegram_user_id, slug):
-            self.database.remove_user_favorite_resort(telegram_user_id=telegram_user_id, resort_slug=slug)
-            added = False
-        else:
-            self.database.add_user_favorite_resort(
-                telegram_user_id=telegram_user_id,
-                resort_slug=slug,
-                created_at=self._now_iso(),
-            )
-            added = True
+        added, favorites = self.database.toggle_user_favorite_resort(
+            telegram_user_id=telegram_user_id,
+            resort_slug=slug,
+            created_at=self._now_iso(),
+        )
         self._track_user_state(
             from_user=from_user,
             chat_id=chat_id,
@@ -623,7 +639,7 @@ class TelegramBot:
             action_type="toggle_favorite_resort",
             action_value=slug,
         )
-        return added
+        return added, favorites
 
     def _toggle_notifications(self, *, from_user: dict, chat_id: int) -> bool:
         telegram_user_id = self._telegram_user_id(from_user)
@@ -675,9 +691,20 @@ class TelegramBot:
         return self.database.get_user_trip_preferences(str(from_user["id"]))
 
     def _get_current_user(self, from_user: dict | None) -> dict | None:
+        return self._get_user_context(from_user)["user"]
+
+    def _get_user_context(self, from_user: dict | None) -> dict:
         if not from_user or "id" not in from_user:
-            return None
-        return self.database.get_telegram_user(str(from_user["id"]))
+            return {
+                "user": None,
+                "favorites": [],
+                "trip_preferences": {
+                    "start_date": None,
+                    "end_date": None,
+                    "notifications_enabled": False,
+                },
+            }
+        return self.database.get_user_context(str(from_user["id"]))
 
     def _telegram_user_id(self, from_user: dict | None) -> str:
         return str((from_user or {}).get("id", "unknown"))
@@ -750,10 +777,7 @@ class TelegramBot:
         return None
 
     def _resort_name(self, slug: str) -> str:
-        for resort in self.service.list_resorts():
-            if resort["slug"] == slug:
-                return resort["name"]
-        return slug
+        return self.resort_names.get(slug, slug)
 
     def _request(self, method: str, params: dict[str, str]) -> dict:
         request = Request(
@@ -781,7 +805,7 @@ class TelegramBot:
 
         timestamp = self._now_iso()
         telegram_user_id = str(from_user["id"])
-        self.database.upsert_telegram_user(
+        self.database.record_user_state(
             telegram_user_id=telegram_user_id,
             chat_id=str(chat_id),
             username=from_user.get("username"),
@@ -789,12 +813,6 @@ class TelegramBot:
             last_name=from_user.get("last_name"),
             current_state=current_state,
             state_payload=state_payload,
-            last_action=action_type,
-            last_seen_at=timestamp,
-        )
-        self.database.log_user_action(
-            telegram_user_id=telegram_user_id,
-            chat_id=str(chat_id),
             action_type=action_type,
             action_value=action_value,
             created_at=timestamp,
