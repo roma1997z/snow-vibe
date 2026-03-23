@@ -50,6 +50,10 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Drop pending updates while removing the webhook.",
     )
+    subparsers.add_parser(
+        "notify-trip-watchers",
+        help="Send one-time trip notifications to users with notifications enabled",
+    )
 
     return parser
 
@@ -78,6 +82,9 @@ def main() -> None:
         return
     if args.command == "delete-webhook":
         _run_delete_webhook(drop_pending=args.drop_pending)
+        return
+    if args.command == "notify-trip-watchers":
+        _run_notify_trip_watchers()
         return
     parser.error(f"Unsupported command: {args.command}")
 
@@ -119,6 +126,11 @@ def _run_webhook_info() -> None:
 
 def _run_delete_webhook(*, drop_pending: bool) -> None:
     payload = TelegramBot().delete_webhook(drop_pending_updates=drop_pending)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def _run_notify_trip_watchers() -> None:
+    payload = TelegramBot().send_trip_notifications()
     print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 

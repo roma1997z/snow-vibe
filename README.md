@@ -81,15 +81,22 @@ TURSO_DATABASE_URL=libsql://your-db-your-org.turso.io
 TURSO_AUTH_TOKEN=replace-me
 ```
 
+Send one-time trip notifications manually:
+
+```bash
+python3 -m snow_vibe.cli notify-trip-watchers
+```
+
 ## Notes
 
 - Forecasts use the official `api.met.no` Locationforecast API.
 - Geocoding uses OpenStreetMap Nominatim.
 - Forecast responses are cached in SQLite for one local resort day by default.
 - If `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` are set, the app uses Turso instead of local SQLite.
-- A built-in SQLAdmin interface is available at `/admin` for browsing and editing SQLite data.
+- A built-in admin interface is available at `/admin` for browsing and editing data.
 - `/admin` is protected by username/password from `.env`.
 - Telegram can work via either long polling or `/telegram/webhook`.
 - Protect the webhook with `SNOW_VIBE_TELEGRAM_WEBHOOK_SECRET`.
+- Vercel Cron can call `/internal/notify-trip-watchers`; protect it with `CRON_SECRET`.
 - Requests must include a meaningful `User-Agent`. Override it with `SNOW_VIBE_USER_AGENT` if needed.
 - The local bot token is read from `.env`.

@@ -1,4 +1,10 @@
 {
+  "crons": [
+    {
+      "path": "/internal/notify-trip-watchers",
+      "schedule": "0 */6 * * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/(.*)",

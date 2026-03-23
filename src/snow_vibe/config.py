@@ -98,3 +98,8 @@ def get_admin_session_secret() -> str:
 def get_telegram_webhook_secret() -> str | None:
     load_dotenv()
     return os.environ.get("SNOW_VIBE_TELEGRAM_WEBHOOK_SECRET")
+
+
+def get_cron_secret() -> str | None:
+    load_dotenv()
+    return os.environ.get("CRON_SECRET")

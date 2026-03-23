@@ -51,6 +51,21 @@ CREATE TABLE IF NOT EXISTS user_actions (
     action_value TEXT,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS user_favorite_resorts (
+    telegram_user_id TEXT NOT NULL,
+    resort_slug TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (telegram_user_id, resort_slug)
+);
+
+CREATE TABLE IF NOT EXISTS user_trip_preferences (
+    telegram_user_id TEXT PRIMARY KEY,
+    start_date TEXT,
+    end_date TEXT,
+    notifications_enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -418,6 +433,185 @@ class Database:
                 "action_type": _value_from_row(row, "action_type", 3),
                 "action_value": _value_from_row(row, "action_value", 4),
                 "created_at": _value_from_row(row, "created_at", 5),
+            }
+            for row in rows
+        ]
+
+    def list_user_favorite_resorts(self, telegram_user_id: str) -> list[str]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT resort_slug
+                FROM user_favorite_resorts
+                WHERE telegram_user_id = ?
+                ORDER BY created_at ASC, resort_slug ASC
+                """,
+                (telegram_user_id,),
+            ).fetchall()
+        return [_value_from_row(row, "resort_slug", 0) for row in rows]
+
+    def user_has_favorite_resort(self, telegram_user_id: str, resort_slug: str) -> bool:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT 1
+                FROM user_favorite_resorts
+                WHERE telegram_user_id = ? AND resort_slug = ?
+                """,
+                (telegram_user_id, resort_slug),
+            ).fetchone()
+        return row is not None
+
+    def add_user_favorite_resort(
+        self,
+        *,
+        telegram_user_id: str,
+        resort_slug: str,
+        created_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_favorite_resorts (
+                    telegram_user_id,
+                    resort_slug,
+                    created_at
+                ) VALUES (?, ?, ?)
+                ON CONFLICT(telegram_user_id, resort_slug)
+                DO NOTHING
+                """,
+                (telegram_user_id, resort_slug, created_at),
+            )
+
+    def remove_user_favorite_resort(self, *, telegram_user_id: str, resort_slug: str) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                DELETE FROM user_favorite_resorts
+                WHERE telegram_user_id = ? AND resort_slug = ?
+                """,
+                (telegram_user_id, resort_slug),
+            )
+
+    def get_user_trip_preferences(self, telegram_user_id: str) -> dict:
+        with self.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT telegram_user_id, start_date, end_date, notifications_enabled, updated_at
+                FROM user_trip_preferences
+                WHERE telegram_user_id = ?
+                """,
+                (telegram_user_id,),
+            ).fetchone()
+        if row is None:
+            return {
+                "telegram_user_id": telegram_user_id,
+                "start_date": None,
+                "end_date": None,
+                "notifications_enabled": False,
+                "updated_at": None,
+            }
+        return {
+            "telegram_user_id": _value_from_row(row, "telegram_user_id", 0),
+            "start_date": _value_from_row(row, "start_date", 1),
+            "end_date": _value_from_row(row, "end_date", 2),
+            "notifications_enabled": bool(_value_from_row(row, "notifications_enabled", 3)),
+            "updated_at": _value_from_row(row, "updated_at", 4),
+        }
+
+    def save_user_trip_preferences(
+        self,
+        *,
+        telegram_user_id: str,
+        start_date: str | None,
+        end_date: str | None,
+        notifications_enabled: bool,
+        updated_at: str,
+    ) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO user_trip_preferences (
+                    telegram_user_id,
+                    start_date,
+                    end_date,
+                    notifications_enabled,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(telegram_user_id)
+                DO UPDATE SET
+                    start_date = excluded.start_date,
+                    end_date = excluded.end_date,
+                    notifications_enabled = excluded.notifications_enabled,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    telegram_user_id,
+                    start_date,
+                    end_date,
+                    int(notifications_enabled),
+                    updated_at,
+                ),
+            )
+
+    def set_user_notifications_enabled(
+        self,
+        *,
+        telegram_user_id: str,
+        notifications_enabled: bool,
+        updated_at: str,
+    ) -> None:
+        current = self.get_user_trip_preferences(telegram_user_id)
+        self.save_user_trip_preferences(
+            telegram_user_id=telegram_user_id,
+            start_date=current["start_date"],
+            end_date=current["end_date"],
+            notifications_enabled=notifications_enabled,
+            updated_at=updated_at,
+        )
+
+    def clear_user_trip_dates(self, *, telegram_user_id: str, updated_at: str) -> None:
+        current = self.get_user_trip_preferences(telegram_user_id)
+        self.save_user_trip_preferences(
+            telegram_user_id=telegram_user_id,
+            start_date=None,
+            end_date=None,
+            notifications_enabled=current["notifications_enabled"],
+            updated_at=updated_at,
+        )
+
+    def list_users_with_notifications_enabled(self) -> list[dict]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    u.telegram_user_id,
+                    u.chat_id,
+                    u.username,
+                    u.first_name,
+                    u.last_name,
+                    p.start_date,
+                    p.end_date,
+                    p.notifications_enabled,
+                    p.updated_at
+                FROM telegram_users u
+                JOIN user_trip_preferences p
+                  ON p.telegram_user_id = u.telegram_user_id
+                WHERE p.notifications_enabled = 1
+                ORDER BY p.updated_at ASC, u.last_seen_at DESC
+                """
+            ).fetchall()
+        return [
+            {
+                "telegram_user_id": _value_from_row(row, "telegram_user_id", 0),
+                "chat_id": _value_from_row(row, "chat_id", 1),
+                "username": _value_from_row(row, "username", 2),
+                "first_name": _value_from_row(row, "first_name", 3),
+                "last_name": _value_from_row(row, "last_name", 4),
+                "start_date": _value_from_row(row, "start_date", 5),
+                "end_date": _value_from_row(row, "end_date", 6),
+                "notifications_enabled": bool(_value_from_row(row, "notifications_enabled", 7)),
+                "updated_at": _value_from_row(row, "updated_at", 8),
             }
             for row in rows
         ]

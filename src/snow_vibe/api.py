@@ -9,6 +9,7 @@ from snow_vibe.admin import setup_admin
 from snow_vibe.bot import TelegramBot
 from snow_vibe.config import (
     get_admin_session_secret,
+    get_cron_secret,
     get_telegram_webhook_secret,
 )
 from snow_vibe.services import ForecastService
@@ -75,3 +76,19 @@ async def telegram_webhook(
     payload = await request.json()
     TelegramBot().process_update(payload)
     return {"ok": True}
+
+
+@app.get("/internal/notify-trip-watchers")
+def notify_trip_watchers(
+    authorization: str | None = Header(default=None),
+) -> dict:
+    expected_secret = get_cron_secret()
+    if expected_secret and authorization != f"Bearer {expected_secret}":
+        raise HTTPException(status_code=401, detail="Invalid cron authorization")
+
+    items = TelegramBot().send_trip_notifications()
+    return {
+        "ok": True,
+        "sent_count": len(items),
+        "items": items,
+    }

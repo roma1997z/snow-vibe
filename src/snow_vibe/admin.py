@@ -20,8 +20,13 @@ def setup_admin(app: FastAPI) -> None:
         database = Database()
         forecast_count = len(database.list_forecasts())
         state_count = len(database.list_state())
-        user_count = len(database.list_telegram_users())
+        users = database.list_telegram_users()
+        user_count = len(users)
         action_count = len(database.list_user_actions(limit=1000))
+        favorite_count = sum(
+            len(database.list_user_favorite_resorts(row["telegram_user_id"]))
+            for row in users
+        )
         return HTMLResponse(
             _page(
                 "snow-vibe admin",
@@ -31,6 +36,7 @@ def setup_admin(app: FastAPI) -> None:
                 <p><strong>App state rows:</strong> {state_count}</p>
                 <p><strong>Telegram users:</strong> {user_count}</p>
                 <p><strong>User actions:</strong> {action_count}</p>
+                <p><strong>Favorite selections:</strong> {favorite_count}</p>
                 <p>
                     <a href="/admin/forecasts">Forecast cache</a><br>
                     <a href="/admin/app-state">App state</a><br>
@@ -237,6 +243,8 @@ def setup_admin(app: FastAPI) -> None:
         if user is None:
             return HTMLResponse(_page("Not Found", "<p>User not found.</p>"), status_code=404)
         actions = database.list_user_actions(telegram_user_id=telegram_user_id, limit=100)
+        favorites = database.list_user_favorite_resorts(telegram_user_id)
+        trip_preferences = database.get_user_trip_preferences(telegram_user_id)
         actions_html = "".join(
             f"""
             <tr>
@@ -257,6 +265,9 @@ def setup_admin(app: FastAPI) -> None:
                 <p><strong>Current state:</strong> {escape(user['current_state'])}</p>
                 <p><strong>Last action:</strong> {escape(user['last_action'] or '-')}</p>
                 <p><strong>Last seen:</strong> {escape(user['last_seen_at'])}</p>
+                <p><strong>Favorite resorts:</strong> {escape(', '.join(favorites) if favorites else '-')}</p>
+                <p><strong>Trip dates:</strong> {escape(_format_trip_dates(trip_preferences))}</p>
+                <p><strong>Notifications:</strong> {escape('enabled' if trip_preferences['notifications_enabled'] else 'disabled')}</p>
                 <p><strong>State payload:</strong></p>
                 <pre>{escape(user['state_payload_json'])}</pre>
                 <h2>Recent actions</h2>
@@ -390,6 +401,14 @@ def _display_user_name(user: dict) -> str:
         return f"@{user['username']}"
     name = " ".join(part for part in [user.get("first_name"), user.get("last_name")] if part)
     return name or user.get("telegram_user_id", "unknown")
+
+
+def _format_trip_dates(preferences: dict) -> str:
+    start_date = preferences.get("start_date")
+    end_date = preferences.get("end_date")
+    if not start_date or not end_date:
+        return "-"
+    return f"{start_date} -> {end_date}"
 
 
 def _page(title: str, body: str) -> str:
