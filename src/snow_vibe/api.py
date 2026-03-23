@@ -25,6 +25,11 @@ def get_service() -> ForecastService:
     return ForecastService()
 
 
+@lru_cache(maxsize=1)
+def get_bot() -> TelegramBot:
+    return TelegramBot(service=get_service())
+
+
 @app.get("/")
 def root() -> dict:
     return {"service": "snow-vibe", "status": "ok"}
@@ -74,7 +79,7 @@ async def telegram_webhook(
         raise HTTPException(status_code=403, detail="Invalid Telegram webhook secret")
 
     payload = await request.json()
-    TelegramBot().process_update(payload)
+    get_bot().process_update(payload)
     return {"ok": True}
 
 
@@ -86,7 +91,7 @@ def notify_trip_watchers(
     if expected_secret and authorization != f"Bearer {expected_secret}":
         raise HTTPException(status_code=401, detail="Invalid cron authorization")
 
-    items = TelegramBot().send_trip_notifications()
+    items = get_bot().send_trip_notifications()
     return {
         "ok": True,
         "sent_count": len(items),

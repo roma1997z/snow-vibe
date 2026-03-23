@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -74,33 +76,59 @@ class Database:
         self.backend = "turso" if use_turso_database() else "sqlite"
         self.db_path = db_path or get_database_path()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
+        self._connection: Any | None = None
+        self._initialized = False
+        self._last_sync_at = 0.0
+        self._sync_interval_seconds = 20.0
 
     @contextmanager
-    def connect(self) -> Iterator[Any]:
+    def connect(self, *, write: bool = False, fresh: bool = False) -> Iterator[Any]:
+        connection = self._get_connection()
+        self._ensure_initialized()
+        if self.backend == "turso" and (fresh or (not write and self._should_sync())):
+            connection.sync()
+            self._last_sync_at = time.monotonic()
+        try:
+            yield connection
+            if write:
+                connection.commit()
+            if self.backend == "turso" and write:
+                connection.sync()
+                self._last_sync_at = time.monotonic()
+        finally:
+            pass
+
+    def _get_connection(self) -> Any:
+        if self._connection is not None:
+            return self._connection
+
         if self.backend == "turso":
             import libsql
 
-            connection = libsql.connect(
+            self._connection = libsql.connect(
                 str(self.db_path),
                 sync_url=get_turso_database_url(),
                 auth_token=get_turso_auth_token(),
             )
-            connection.sync()
         else:
-            connection = sqlite3.connect(self.db_path)
-            connection.row_factory = sqlite3.Row
-        try:
-            yield connection
-            connection.commit()
-            if self.backend == "turso":
-                connection.sync()
-        finally:
-            connection.close()
+            self._connection = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._connection.row_factory = sqlite3.Row
+        return self._connection
 
-    def _initialize(self) -> None:
-        with self.connect() as connection:
-            connection.executescript(SCHEMA)
+    def _ensure_initialized(self) -> None:
+        if self._initialized:
+            return
+        connection = self._get_connection()
+        connection.executescript(SCHEMA)
+        if self.backend == "turso":
+            connection.sync()
+            self._last_sync_at = time.monotonic()
+        else:
+            connection.commit()
+        self._initialized = True
+
+    def _should_sync(self) -> bool:
+        return (time.monotonic() - self._last_sync_at) >= self._sync_interval_seconds
 
     def get_cached_forecast(self, resort_slug: str, cache_date: date) -> dict | None:
         with self.connect() as connection:
@@ -137,7 +165,7 @@ class Database:
         ]
 
     def get_forecast_row(self, resort_slug: str, cache_date: str) -> dict | None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             row = connection.execute(
                 """
                 SELECT resort_slug, cache_date, fetched_at, provider, payload_json
@@ -165,7 +193,7 @@ class Database:
         payload: dict,
         fetched_at: datetime,
     ) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 INSERT INTO resort_forecasts (
@@ -195,7 +223,7 @@ class Database:
         provider: str,
         payload_json: str,
     ) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 UPDATE resort_forecasts
@@ -231,7 +259,7 @@ class Database:
         ]
 
     def set_state(self, key: str, value: str) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 INSERT INTO app_state (key, value)
@@ -256,7 +284,7 @@ class Database:
         last_seen_at: str,
     ) -> None:
         payload_json = json.dumps(state_payload or {}, ensure_ascii=False)
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 INSERT INTO telegram_users (
@@ -305,7 +333,7 @@ class Database:
         action_value: str | None,
         created_at: str,
     ) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 INSERT INTO user_actions (
@@ -335,7 +363,7 @@ class Database:
         log_action: bool = False,
     ) -> None:
         payload_json = json.dumps(state_payload or {}, ensure_ascii=False)
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 INSERT INTO telegram_users (
@@ -389,7 +417,7 @@ class Database:
                 )
 
     def list_telegram_users(self) -> list[dict]:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             rows = connection.execute(
                 """
                 SELECT
@@ -440,7 +468,7 @@ class Database:
         ]
 
     def get_telegram_user(self, telegram_user_id: str) -> dict | None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             row = connection.execute(
                 """
                 SELECT
@@ -475,7 +503,7 @@ class Database:
         }
 
     def get_user_context(self, telegram_user_id: str) -> dict:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             user_row = connection.execute(
                 """
                 SELECT
@@ -569,7 +597,7 @@ class Database:
             params = (limit,)
         query += " ORDER BY created_at DESC, id DESC LIMIT ?"
 
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             rows = connection.execute(query, params).fetchall()
         return [
             {
@@ -584,7 +612,7 @@ class Database:
         ]
 
     def list_user_favorite_resorts(self, telegram_user_id: str) -> list[str]:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             rows = connection.execute(
                 """
                 SELECT resort_slug
@@ -603,7 +631,7 @@ class Database:
         resort_slug: str,
         created_at: str,
     ) -> tuple[bool, list[str]]:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             row = connection.execute(
                 """
                 SELECT 1
@@ -682,7 +710,7 @@ class Database:
         notifications_enabled: bool,
         updated_at: str,
     ) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             connection.execute(
                 """
                 INSERT INTO user_trip_preferences (
@@ -715,7 +743,7 @@ class Database:
         notifications_enabled: bool,
         updated_at: str,
     ) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             row = connection.execute(
                 """
                 SELECT start_date, end_date
@@ -752,7 +780,7 @@ class Database:
             )
 
     def clear_user_trip_dates(self, *, telegram_user_id: str, updated_at: str) -> None:
-        with self.connect() as connection:
+        with self.connect(write=True) as connection:
             row = connection.execute(
                 """
                 SELECT notifications_enabled
@@ -830,3 +858,8 @@ def _value_from_row(row: Any, key: str, index: int) -> Any:
     if isinstance(row, sqlite3.Row):
         return row[key]
     return row[index]
+
+
+@lru_cache(maxsize=1)
+def get_database() -> Database:
+    return Database()

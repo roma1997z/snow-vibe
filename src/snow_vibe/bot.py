@@ -9,7 +9,7 @@ from snow_vibe.config import get_telegram_bot_token, get_telegram_webhook_secret
 from snow_vibe.http import build_ssl_context
 from snow_vibe.serialization import format_telegram_resort_forecast
 from snow_vibe.services import ForecastService
-from snow_vibe.storage import Database
+from snow_vibe.storage import Database, get_database
 
 
 SHOW_RESORTS_TEXT = "Показать курорты"
@@ -37,8 +37,9 @@ class TelegramBot:
             raise RuntimeError("SNOW_VIBE_TELEGRAM_BOT_TOKEN is not configured")
 
         self.token = token
-        self.service = service or ForecastService()
-        self.database = database or Database()
+        shared_database = database or get_database()
+        self.service = service or ForecastService(database=shared_database)
+        self.database = shared_database
         self.base_url = f"https://api.telegram.org/bot{self.token}"
         self.resorts = self.service.list_resorts()
         self.resort_names = {resort["slug"]: resort["name"] for resort in self.resorts}

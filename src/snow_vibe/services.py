@@ -6,12 +6,12 @@ from zoneinfo import ZoneInfo
 from snow_vibe.providers.metno import MetNoClient
 from snow_vibe.resorts import RESORTS, get_resort
 from snow_vibe.serialization import build_resort_payload
-from snow_vibe.storage import Database
+from snow_vibe.storage import Database, get_database
 
 
 class ForecastService:
     def __init__(self, database: Database | None = None) -> None:
-        self.database = database or Database()
+        self.database = database or get_database()
         self.metno = MetNoClient()
 
     def list_resorts(self) -> list[dict]:

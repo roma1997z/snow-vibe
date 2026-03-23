@@ -8,7 +8,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from snow_vibe.config import get_admin_password, get_admin_username
-from snow_vibe.storage import Database
+from snow_vibe.storage import Database, get_database
 
 
 def setup_admin(app: FastAPI) -> None:
@@ -17,7 +17,7 @@ def setup_admin(app: FastAPI) -> None:
         if not _is_authenticated(request):
             return RedirectResponse("/admin/login", status_code=303)
 
-        database = Database()
+        database = get_database()
         forecast_count = len(database.list_forecasts())
         state_count = len(database.list_state())
         users = database.list_telegram_users()
@@ -106,7 +106,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         rows = database.list_state()
         rows_html = "".join(
             f"""
@@ -135,7 +135,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         value = database.get_state(key)
         if value is None:
             return HTMLResponse(_page("Not Found", "<p>Key not found.</p>"), status_code=404)
@@ -164,7 +164,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         database.set_state(key, value)
         return RedirectResponse(f"/admin/app-state/{key}", status_code=303)
 
@@ -173,7 +173,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         rows = database.list_forecasts()
         rows_html = "".join(
             f"""
@@ -204,7 +204,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         rows = database.list_telegram_users()
         rows_html = "".join(
             f"""
@@ -238,7 +238,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         user = database.get_telegram_user(telegram_user_id)
         if user is None:
             return HTMLResponse(_page("Not Found", "<p>User not found.</p>"), status_code=404)
@@ -284,7 +284,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         rows = database.list_user_actions(limit=300)
         rows_html = "".join(
             f"""
@@ -319,7 +319,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         row = database.get_forecast_row(resort_slug, cache_date)
         if row is None:
             return HTMLResponse(_page("Not Found", "<p>Forecast row not found.</p>"), status_code=404)
@@ -356,7 +356,7 @@ def setup_admin(app: FastAPI) -> None:
         auth = _require_auth(request)
         if auth is not None:
             return auth
-        database = Database()
+        database = get_database()
         try:
             json.loads(payload_json)
         except json.JSONDecodeError as exc:
