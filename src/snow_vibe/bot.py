@@ -16,6 +16,7 @@ SHOW_RESORTS_TEXT = "Показать курорты"
 BEST_RESORT_TEXT = "Выбрать лучший курорт"
 FAVORITES_TEXT = "Избранные курорты"
 TRIP_PLAN_TEXT = "План поездки"
+TRACKED_ACTIONS = {"choose_best_resort"}
 
 WELCOME_TEXT = (
     "<b>snow vibe</b>\n"
@@ -816,6 +817,7 @@ class TelegramBot:
             action_type=action_type,
             action_value=action_value,
             created_at=timestamp,
+            log_action=action_type in TRACKED_ACTIONS,
         )
 
     def _now_iso(self) -> str:

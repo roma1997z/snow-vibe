@@ -332,6 +332,7 @@ class Database:
         action_type: str,
         action_value: str | None,
         created_at: str,
+        log_action: bool = False,
     ) -> None:
         payload_json = json.dumps(state_payload or {}, ensure_ascii=False)
         with self.connect() as connection:
@@ -373,18 +374,19 @@ class Database:
                     created_at,
                 ),
             )
-            connection.execute(
-                """
-                INSERT INTO user_actions (
-                    telegram_user_id,
-                    chat_id,
-                    action_type,
-                    action_value,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?)
-                """,
-                (telegram_user_id, chat_id, action_type, action_value, created_at),
-            )
+            if log_action:
+                connection.execute(
+                    """
+                    INSERT INTO user_actions (
+                        telegram_user_id,
+                        chat_id,
+                        action_type,
+                        action_value,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (telegram_user_id, chat_id, action_type, action_value, created_at),
+                )
 
     def list_telegram_users(self) -> list[dict]:
         with self.connect() as connection:
